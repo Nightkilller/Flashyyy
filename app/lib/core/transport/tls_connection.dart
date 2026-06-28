@@ -35,6 +35,9 @@ class TlsConnection implements Connection {
   }
 
   @override
+  bool get isConnected => _connected;
+
+  @override
   Future<void> sendBytes(Uint8List data) async {
     if (!_connected) {
       throw const ConnectionClosedException();
@@ -65,5 +68,5 @@ class TlsConnection implements Connection {
   String get remoteAddress => _secureSocket.address.address;
 
   /// Exposes the remote port for debugging/logging.
-  int get remotePort => _secureSocket.port;
+  int get remotePort => _secureSocket.remotePort;
 }

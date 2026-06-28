@@ -35,18 +35,17 @@ class LanConnectionManager {
   /// Handles authentication for an incoming connection on the server side.
   /// Returns an authenticated [TlsConnection] or throws an [AuthenticationException].
   Future<TlsConnection> handleIncomingConnection(SecureSocket socket) async {
+    final conn = TlsConnection(socket);
+    final lines = conn.incomingBytes.map(utf8.decode).transform(const LineSplitter());
+    final iterator = StreamIterator(lines);
     try {
       final challengeBytes = _generateRandomBytes(32);
       final challengeHex = _toHex(challengeBytes);
 
       // 1. Send challenge to client
-      socket.write(jsonEncode({'action': 'challenge', 'challenge': challengeHex}) + '\n');
-      await socket.flush();
+      await conn.sendBytes(utf8.encode(jsonEncode({'action': 'challenge', 'challenge': challengeHex}) + '\n'));
 
       // 2. Wait for client response
-      final lines = socket.transform(utf8.decoder).transform(const LineSplitter());
-      final iterator = StreamIterator(lines);
-
       if (!await iterator.moveNext()) {
         throw const HttpException('Client disconnected before sending challenge response');
       }
@@ -66,10 +65,10 @@ class LanConnectionManager {
         throw HttpException('Device $clientDeviceId is not a trusted contact');
       }
 
-      final isClientValid = await identityManager.verifyHex(
-        publicKeyHex: clientPublicKeyHex,
-        message: challengeBytes,
-        signatureHex: clientSignatureHex,
+      final isClientValid = await KeypairManager.verify(
+        challengeBytes,
+        _fromHex(clientSignatureHex),
+        _fromHex(clientPublicKeyHex),
       );
 
       if (!isClientValid) {
@@ -78,19 +77,20 @@ class LanConnectionManager {
 
       // 4. Sign client's challenge and send back response
       final clientChallengeBytes = _fromHex(clientChallengeHex);
-      final mySignatureHex = await identityManager.sign(clientChallengeBytes);
+      final mySignatureHex = _toHex(await identityManager.sign(clientChallengeBytes));
 
-      socket.write(jsonEncode({
+      await conn.sendBytes(utf8.encode(jsonEncode({
         'action': 'authOk',
         'deviceId': identityManager.identity.deviceId,
         'signature': mySignatureHex,
-      }) + '\n');
-      await socket.flush();
+      }) + '\n'));
 
-      return TlsConnection(socket);
+      return conn;
     } catch (e) {
-      socket.close();
+      conn.close();
       rethrow;
+    } finally {
+      await iterator.cancel();
     }
   }
 
@@ -111,10 +111,10 @@ class LanConnectionManager {
       timeout: const Duration(seconds: 5),
     );
 
+    final conn = TlsConnection(socket);
+    final lines = conn.incomingBytes.map(utf8.decode).transform(const LineSplitter());
+    final iterator = StreamIterator(lines);
     try {
-      final lines = socket.transform(utf8.decoder).transform(const LineSplitter());
-      final iterator = StreamIterator(lines);
-
       // 1. Await server's challenge
       if (!await iterator.moveNext()) {
         throw const HttpException('Server disconnected before sending challenge');
@@ -129,18 +129,17 @@ class LanConnectionManager {
       final hostChallengeBytes = _fromHex(hostChallengeHex);
 
       // 2. Sign host's challenge and generate client challenge
-      final mySignatureHex = await identityManager.sign(hostChallengeBytes);
+      final mySignatureHex = _toHex(await identityManager.sign(hostChallengeBytes));
       final clientChallengeBytes = _generateRandomBytes(32);
       final clientChallengeHex = _toHex(clientChallengeBytes);
 
       // 3. Send response and own challenge
-      socket.write(jsonEncode({
+      await conn.sendBytes(utf8.encode(jsonEncode({
         'action': 'response',
         'deviceId': identityManager.identity.deviceId,
         'signature': mySignatureHex,
         'clientChallenge': clientChallengeHex,
-      }) + '\n');
-      await socket.flush();
+      }) + '\n'));
 
       // 4. Await server verification response
       if (!await iterator.moveNext()) {
@@ -160,20 +159,22 @@ class LanConnectionManager {
         throw HttpException('Host $peerDeviceId is not a trusted contact');
       }
 
-      final isHostValid = await identityManager.verifyHex(
-        publicKeyHex: hostPublicKeyHex,
-        message: clientChallengeBytes,
-        signatureHex: hostSignatureHex,
+      final isHostValid = await KeypairManager.verify(
+        clientChallengeBytes,
+        _fromHex(hostSignatureHex),
+        _fromHex(hostPublicKeyHex),
       );
 
       if (!isHostValid) {
         throw const HttpException('Server signature verification failed');
       }
 
-      return TlsConnection(socket);
+      return conn;
     } catch (e) {
-      socket.close();
+      conn.close();
       rethrow;
+    } finally {
+      await iterator.cancel();
     }
   }
 

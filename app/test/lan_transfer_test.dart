@@ -1,34 +1,43 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:flashy/core/identity/secure_storage.dart';
 import 'package:flashy/core/identity/keypair_manager.dart';
 import 'package:flashy/core/transport/lan_connection_manager.dart';
-import 'package:flashy/core/transfer/file_chunker.dart';
 import 'package:flashy/core/transfer/resume_state_store.dart';
 import 'package:flashy/core/transfer/transfer_manager.dart';
+import 'package:flashy/core/transport/tls_connection.dart';
 
 void main() {
+  setUpAll(() {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  });
+
   late Directory tempDir;
+  late Directory sendDir;
+  late Directory receiveDir;
   late File srcFile;
-  late File destFile;
   late ResumeStateStore dbA;
   late ResumeStateStore dbB;
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('flashy_lan_test');
-    
+    sendDir = Directory('${tempDir.path}/send')..createSync();
+    receiveDir = Directory('${tempDir.path}/receive')..createSync();
+
     // Create source test file with random binary data (1.5 MB)
-    srcFile = File('${tempDir.path}/src.bin');
+    srcFile = File('${sendDir.path}/src.bin');
+    final random = Random(12345);
     final randBytes = Uint8List(1500 * 1024);
     for (var i = 0; i < randBytes.length; i++) {
-      randBytes[i] = i % 256;
+      randBytes[i] = random.nextInt(256);
     }
     await srcFile.writeAsBytes(randBytes);
-
-    destFile = File('${tempDir.path}/dest.bin');
 
     dbA = ResumeStateStore(dbPath: '${tempDir.path}/dbA.db');
     dbB = ResumeStateStore(dbPath: '${tempDir.path}/dbB.db');
@@ -75,25 +84,16 @@ void main() {
       // Start server on B
       final server = await managerB.startServer();
       
-      // Accept incoming on B
-      final serverConnectionCompleter = Completer<LanConnectionManager>();
+      // Accept incoming on B concurrently
+      final serverConnCompleter = Completer<TlsConnection>();
       late StreamSubscription<SecureSocket> serverSub;
       
       serverSub = server.listen((socket) async {
         try {
           final conn = await managerB.handleIncomingConnection(socket);
-          // Start receiver transfer
-          final receiverManager = TransferManager(conn, dbB);
-          
-          receiverManager.receiveProgress.listen((manifest) async {
-            if (manifest.chunksReceived == manifest.totalChunks) {
-              // Assemble file
-              final writer = FileChunker(manifest, destFile.path);
-              await writer.assembleFile();
-            }
-          });
+          serverConnCompleter.complete(conn);
         } catch (e) {
-          fail('Server failed to authenticate client: $e');
+          serverConnCompleter.completeError(e);
         }
       });
 
@@ -106,30 +106,24 @@ void main() {
 
       expect(connA.remotePort, server.port);
 
-      // 4. Setup Sender Chunker
-      final senderChunker = FileChunker.forSending(srcFile.path);
-      final manifest = await senderChunker.manifest;
-      
-      final senderManager = TransferManager(connA, dbA);
-      
-      // Complete transfer
-      final transferCompleter = Completer<void>();
-      senderManager.sendProgress.listen((manifest) {
-        if (manifest.chunksSent == manifest.totalChunks) {
-          transferCompleter.complete();
-        }
-      });
+      final connB = await serverConnCompleter.future.timeout(const Duration(seconds: 5));
 
-      await senderManager.sendManifest(manifest);
-      await senderManager.sendAllChunks(senderChunker);
+      // 4. Run sender and receiver concurrently using TransferManager
+      final senderManager = TransferManager(resumeStore: dbA);
+      final receiverManager = TransferManager(resumeStore: dbB);
 
-      await transferCompleter.future.timeout(const Duration(seconds: 10));
+      final results = await Future.wait([
+        senderManager.sendFile(connA, srcFile.path),
+        receiverManager.receiveFiles(connB, receiveDir.path),
+      ]);
 
-      // Wait a moment for B to assemble
-      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(results[0].success, isTrue, reason: 'Sender failed: ${results[0].errorMessage}');
+      expect(results[1].success, isTrue, reason: 'Receiver failed: ${results[1].errorMessage}');
 
       // 5. Verify file integrity
+      final destFile = File('${receiveDir.path}/src.bin');
       expect(destFile.existsSync(), isTrue);
+      
       final destBytes = await destFile.readAsBytes();
       final srcBytes = await srcFile.readAsBytes();
       expect(destBytes.length, srcBytes.length);
@@ -139,6 +133,7 @@ void main() {
       await serverSub.cancel();
       await server.close();
       await connA.close();
+      await connB.close();
     });
   });
 }
