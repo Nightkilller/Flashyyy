@@ -171,7 +171,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   void _connectSignaling() {
     if (_sessionStore.isLoggedIn) {
       _signalingSubscription?.cancel();
-      _signalingClient?.disconnect();
+      _signalingClient?.dispose();
 
       _signalingClient = SignalingClient(
         serverUri: Uri.parse('ws://$_signalingServerHost'),
@@ -220,10 +220,9 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   @override
   void dispose() {
     _tabController.dispose();
-    _discovery.stopListening();
-    _discovery.stopAdvertising();
+    _discovery.dispose();
     _signalingSubscription?.cancel();
-    _signalingClient?.disconnect();
+    _signalingClient?.dispose();
     super.dispose();
   }
 
