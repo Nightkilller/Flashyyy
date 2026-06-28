@@ -20,6 +20,7 @@ dependencies:
   web_socket_channel: ^3.0.1
   qr_flutter: ^4.1.0
   mobile_scanner: ^6.0.0
+  multicast_dns: ^0.3.2+2
 
 dev_dependencies:
   flutter_test:
