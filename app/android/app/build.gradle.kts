@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.flashy.app.flashy"
-    compileSdk = 34
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
