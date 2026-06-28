@@ -6,7 +6,9 @@ import 'package:file_picker/file_picker.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:path_provider/path_provider.dart';
+import 'dart:io' show Platform;
 
 import 'core/identity/secure_storage.dart';
 import 'core/identity/keypair_manager.dart';
@@ -24,6 +26,12 @@ import 'core/transport/connection.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
+
   runApp(const FlashyApp());
 }
 
@@ -83,9 +91,16 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   // Configuration settings (for easier multi-device LAN testing)
   String _signalingServerHost = 'localhost:3000';
 
+  // Account Tab login state
+  late final TextEditingController _emailController;
+  late final TextEditingController _codeController;
+  bool _codeSent = false;
+
   @override
   void initState() {
     super.initState();
+    _emailController = TextEditingController();
+    _codeController = TextEditingController();
     _tabController = TabController(length: 3, vsync: this);
     _initializeServices();
   }
@@ -105,6 +120,9 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
       _sessionStore = SessionStore(storage);
       await _sessionStore.loadSession();
+      if (_sessionStore.isLoggedIn && _sessionStore.userEmail != null) {
+        _emailController.text = _sessionStore.userEmail!;
+      }
 
       // 3. AuthService
       _authService = AuthService(
@@ -175,6 +193,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       _signalingClient = SignalingClient(
         serverUri: Uri.parse('ws://$_signalingServerHost'),
         identityManager: _identity,
+        sessionToken: _sessionStore.sessionToken,
       );
       _signalingClient?.connect();
 
@@ -218,6 +237,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
   @override
   void dispose() {
+    _emailController.dispose();
+    _codeController.dispose();
     _tabController.dispose();
     _discovery.dispose();
     _signalingSubscription?.cancel();
@@ -863,159 +884,152 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   }
 
   Widget _buildAccountTab() {
-    final emailController = TextEditingController(text: _sessionStore.userEmail ?? '');
-    final codeController = TextEditingController();
-    bool codeSent = false;
-
-    return StatefulBuilder(
-      builder: (context, setState) {
-        return SingleChildScrollView(
-          child: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Account Device Syncing', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                Text(
-                  'Link multiple devices together using your email. Automatically syncs trust keys across all your desktops and mobiles.',
-                  style: TextStyle(color: Colors.grey[400], fontSize: 13),
-                ),
-                const SizedBox(height: 24),
-                if (_sessionStore.isLoggedIn) ...[
-                  Card(
-                    color: const Color(0xFF1E293B),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+    return SingleChildScrollView(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Account Device Syncing', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Text(
+              'Link multiple devices together using your email. Automatically syncs trust keys across all your desktops and mobiles.',
+              style: TextStyle(color: Colors.grey[400], fontSize: 13),
+            ),
+            const SizedBox(height: 24),
+            if (_sessionStore.isLoggedIn) ...[
+              Card(
+                color: const Color(0xFF1E293B),
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
                         children: [
-                          const Row(
-                            children: [
-                              Icon(Icons.cloud_done, color: Colors.greenAccent),
-                              SizedBox(width: 8),
-                              Text('Device Linked Successfully', style: TextStyle(fontWeight: FontWeight.bold)),
-                            ],
-                          ),
-                          const SizedBox(height: 16),
-                          Text('Logged in as: ${_sessionStore.userEmail}', style: const TextStyle(fontSize: 15)),
-                          const SizedBox(height: 4),
-                          Text('User ID: ${_sessionStore.userId}', style: TextStyle(color: Colors.grey[400], fontSize: 12)),
-                          const SizedBox(height: 24),
-                          ElevatedButton(
-                            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
-                            onPressed: () async {
-                              await _sessionStore.clearSession();
-                              _signalingSubscription?.cancel();
-                              _signalingClient?.dispose();
-                              _signalingClient = null;
-                              _cloudDevices = [];
-                              setState(() {});
-                              this.setState(() {}); // refresh outer views
-                            },
-                            child: const Text('Unlink Account'),
-                          ),
+                          Icon(Icons.cloud_done, color: Colors.greenAccent),
+                          SizedBox(width: 8),
+                          Text('Device Linked Successfully', style: TextStyle(fontWeight: FontWeight.bold)),
                         ],
                       ),
-                    ),
-                  ),
-                ] else ...[
-                  TextField(
-                    controller: emailController,
-                    decoration: const InputDecoration(
-                      labelText: 'Email Address',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.email),
-                    ),
-                    keyboardType: TextInputType.emailAddress,
-                  ),
-                  const SizedBox(height: 16),
-                  if (codeSent) ...[
-                    TextField(
-                      controller: codeController,
-                      decoration: const InputDecoration(
-                        labelText: '6-digit Verification Code',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.lock),
-                      ),
-                      keyboardType: TextInputType.number,
-                    ),
-                    const SizedBox(height: 24),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF6366F1),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                        ),
+                      const SizedBox(height: 16),
+                      Text('Logged in as: ${_sessionStore.userEmail}', style: const TextStyle(fontSize: 15)),
+                      const SizedBox(height: 4),
+                      Text('User ID: ${_sessionStore.userId}', style: TextStyle(color: Colors.grey[400], fontSize: 12)),
+                      const SizedBox(height: 24),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
                         onPressed: () async {
-                          try {
-                            await _authService.verifyCode(emailController.text.trim(), codeController.text.trim());
-                            _connectSignaling();
-                            setState(() {});
-                            this.setState(() {}); // refresh outer state
-                            _showSuccessSnackBar('Logged in successfully!');
-                          } catch (e) {
-                            _showErrorSnackBar(e.toString());
-                          }
+                          await _sessionStore.clearSession();
+                          _signalingSubscription?.cancel();
+                          _signalingClient?.dispose();
+                          _signalingClient = null;
+                          _cloudDevices = [];
+                          _codeSent = false;
+                          _emailController.clear();
+                          _codeController.clear();
+                          setState(() {});
                         },
-                        child: const Text('Verify and Link'),
+                        child: const Text('Unlink Account'),
                       ),
-                    ),
-                  ] else ...[
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF6366F1),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                        ),
-                        onPressed: () async {
-                          try {
-                            await _authService.requestCode(emailController.text.trim());
-                            setState(() {
-                              codeSent = true;
-                            });
-                            _showSuccessSnackBar('Verification code sent to email!');
-                          } catch (e) {
-                            _showErrorSnackBar(e.toString());
-                          }
-                        },
-                        child: const Text('Send Verification Code'),
-                      ),
-                    ),
-                  ],
-                ],
-                const SizedBox(height: 32),
-                const Divider(),
-                const SizedBox(height: 16),
-                const Text('Signaling Server Host Settings', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 12),
+                    ],
+                  ),
+                ),
+              ),
+            ] else ...[
+              TextField(
+                controller: _emailController,
+                decoration: const InputDecoration(
+                  labelText: 'Email Address',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.email),
+                ),
+                keyboardType: TextInputType.emailAddress,
+              ),
+              const SizedBox(height: 16),
+              if (_codeSent) ...[
                 TextField(
-                  controller: TextEditingController(text: _signalingServerHost),
+                  controller: _codeController,
                   decoration: const InputDecoration(
-                    labelText: 'Signaling Server IP:Port',
+                    labelText: '6-digit Verification Code',
                     border: OutlineInputBorder(),
-                    helperText: 'e.g., 192.168.1.50:8080 (Set to local signaling IP for multi-device testing)',
+                    prefixIcon: Icon(Icons.lock),
                   ),
-                  onChanged: (val) {
-                    setState(() {
-                      _signalingServerHost = val.trim();
-                      _authService = AuthService(
-                        signalingHttpUrl: 'http://$_signalingServerHost',
-                        identityManager: _identity,
-                        sessionStore: _sessionStore,
-                      );
-                    });
-                  },
+                  keyboardType: TextInputType.number,
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF6366F1),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    onPressed: () async {
+                      try {
+                        await _authService.verifyCode(_emailController.text.trim(), _codeController.text.trim());
+                        _connectSignaling();
+                        setState(() {});
+                        _showSuccessSnackBar('Logged in successfully!');
+                      } catch (e) {
+                        _showErrorSnackBar(e.toString());
+                      }
+                    },
+                    child: const Text('Verify and Link'),
+                  ),
+                ),
+              ] else ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF6366F1),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    onPressed: () async {
+                      try {
+                        await _authService.requestCode(_emailController.text.trim());
+                        setState(() {
+                          _codeSent = true;
+                        });
+                        _showSuccessSnackBar('Verification code sent to email!');
+                      } catch (e) {
+                        _showErrorSnackBar(e.toString());
+                      }
+                    },
+                    child: const Text('Send Verification Code'),
+                  ),
                 ),
               ],
+            ],
+            const SizedBox(height: 32),
+            const Divider(),
+            const SizedBox(height: 16),
+            const Text('Signaling Server Host Settings', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: TextEditingController(text: _signalingServerHost),
+              decoration: const InputDecoration(
+                labelText: 'Signaling Server IP:Port',
+                border: OutlineInputBorder(),
+                helperText: 'e.g., 192.168.1.50:8080 (Set to local signaling IP for multi-device testing)',
+              ),
+              onSubmitted: (val) {
+                setState(() {
+                  _signalingServerHost = val.trim();
+                  _authService = AuthService(
+                    signalingHttpUrl: 'http://$_signalingServerHost',
+                    identityManager: _identity,
+                    sessionStore: _sessionStore,
+                  );
+                });
+              },
             ),
-          ),
-        );
-      },
+          ],
+        ),
+      ),
     );
   }
 }

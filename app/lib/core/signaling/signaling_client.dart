@@ -8,6 +8,7 @@ import '../identity/keypair_manager.dart';
 class SignalingClient {
   final Uri serverUri;
   final KeypairManager identityManager;
+  final String? sessionToken;
 
   WebSocketChannel? _channel;
   bool _isDisposed = false;
@@ -22,6 +23,7 @@ class SignalingClient {
   SignalingClient({
     required this.serverUri,
     required this.identityManager,
+    this.sessionToken,
   });
 
   /// Stream of all incoming WebSocket messages parsed as JSON maps.
@@ -73,6 +75,7 @@ class SignalingClient {
       'deviceName': identityManager.identity.deviceName,
       'deviceType': identityManager.identity.deviceType,
       'publicKey': identityManager.publicKeyHex,
+      'sessionToken': sessionToken,
     });
   }
 
