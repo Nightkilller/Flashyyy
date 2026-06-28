@@ -138,8 +138,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
       // 5. LAN Discovery Service
       _discovery = LanDiscoveryService();
-      _discovery.startListening();
-      _discovery.startAdvertising(
+      _discovery.start(
         deviceId: _identity.identity.deviceId,
         deviceName: _identity.identity.deviceName,
         port: secureServer.port,
@@ -493,7 +492,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           child: Padding(
             padding: const EdgeInsets.all(24.0),
             child: Column(
-              mainAxisAlignment: MainAxisSize.min,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 const Icon(Icons.error_outline, size: 64, color: Colors.redAccent),
                 const SizedBox(height: 16),
