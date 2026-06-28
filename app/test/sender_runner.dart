@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -53,14 +54,20 @@ void main() {
     print('🔒 Mutual authentication handshake successful!');
 
     final sender = TransferManager(resumeStore: resumeDb);
-    sender.sendProgress.listen((manifest) {
-      print('Chunks sent: ${manifest.chunksSent} / ${manifest.totalChunks}');
+    final progressController = StreamController<TransferProgress>();
+    progressController.stream.listen((progress) {
+      print('Chunks sent progress: ${(progress.fraction * 100).toStringAsFixed(1)}% (${progress.transferredBytes}/${progress.totalBytes} bytes)');
     });
 
     print('Streaming file ${file.path}...');
-    await sender.sendFile(conn, file.path);
+    await sender.sendFile(
+      conn,
+      file.path,
+      onProgress: (p) => progressController.add(p),
+    );
     print('🎉 File sent successfully!');
 
+    await progressController.close();
     await conn.close();
   });
 }

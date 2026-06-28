@@ -250,18 +250,26 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
     // 3. Initialize Sender Transfer Manager
     final sender = TransferManager(resumeStore: _resumeDb);
+    final progressController = StreamController<TransferProgress>();
+
     _showProgressOverlay(
       title: 'Sending to ${peer.deviceName}',
-      progressStream: sender.sendProgress,
+      progressStream: progressController.stream,
       onComplete: () => _showSuccessSnackBar('File sent successfully!'),
       onError: (err) => _showErrorSnackBar('Send failed: $err'),
     );
 
     try {
-      await sender.sendFile(conn, filePath);
+      await sender.sendFile(
+        conn,
+        filePath,
+        onProgress: (p) => progressController.add(p),
+      );
     } catch (e) {
+      progressController.addError(e);
       debugPrint('Error sending file: $e');
     } finally {
+      await progressController.close();
       await conn.close();
     }
   }
@@ -290,9 +298,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
     // 3. Progress tracking
     final sender = TransferManager(resumeStore: _resumeDb);
+    final progressController = StreamController<TransferProgress>();
+
     _showProgressOverlay(
       title: 'Sending to $peerName (Cloud)',
-      progressStream: sender.sendProgress,
+      progressStream: progressController.stream,
       onComplete: () => _showSuccessSnackBar('File sent successfully!'),
       onError: (err) => _showErrorSnackBar('Send failed: $err'),
     );
@@ -300,10 +310,16 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     try {
       // Execute standard client challenge-response over custom transport channel
       await _connectionManager.authenticateAsClient(conn, peerDeviceId);
-      await sender.sendFile(conn, filePath);
+      await sender.sendFile(
+        conn,
+        filePath,
+        onProgress: (p) => progressController.add(p),
+      );
     } catch (e) {
+      progressController.addError(e);
       debugPrint('Cloud transfer failed: $e');
     } finally {
+      await progressController.close();
       await conn.close();
     }
   }
@@ -315,10 +331,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     // Start progress tracker & receiver manifest settings
     final receiver = TransferManager(resumeStore: _resumeDb);
     final downloadsDir = await getTemporaryDirectory();
+    final progressController = StreamController<TransferProgress>();
 
     _showProgressOverlay(
       title: 'Receiving File (Cloud)...',
-      progressStream: receiver.receiveProgress,
+      progressStream: progressController.stream,
       onComplete: () => _showSuccessSnackBar('File received successfully!'),
       onError: (err) => _showErrorSnackBar('Receive failed: $err'),
     );
@@ -326,10 +343,16 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     try {
       // Execute server challenge-response over custom transport channel
       await _connectionManager.authenticateAsServer(conn);
-      await receiver.receiveFiles(conn, downloadsDir.path);
+      await receiver.receiveFiles(
+        conn,
+        downloadsDir.path,
+        onProgress: (p) => progressController.add(p),
+      );
     } catch (e) {
+      progressController.addError(e);
       debugPrint('Cloud receiving handshake failed: $e');
     } finally {
+      await progressController.close();
       await conn.close();
     }
   }
@@ -338,26 +361,33 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     // 1. Initialize Receiver Transfer Manager (receives in standard download directory)
     final receiver = TransferManager(resumeStore: _resumeDb);
     final downloadsDir = await getTemporaryDirectory(); // Fallback storage folder
+    final progressController = StreamController<TransferProgress>();
 
     _showProgressOverlay(
       title: 'Receiving File...',
-      progressStream: receiver.receiveProgress,
+      progressStream: progressController.stream,
       onComplete: () => _showSuccessSnackBar('File received and saved!'),
       onError: (err) => _showErrorSnackBar('Receive failed: $err'),
     );
 
     try {
-      await receiver.receiveFiles(conn, downloadsDir.path);
+      await receiver.receiveFiles(
+        conn,
+        downloadsDir.path,
+        onProgress: (p) => progressController.add(p),
+      );
     } catch (e) {
+      progressController.addError(e);
       debugPrint('Error receiving file: $e');
     } finally {
+      await progressController.close();
       await conn.close();
     }
   }
 
   void _showProgressOverlay({
     required String title,
-    required Stream<TransferManifest> progressStream,
+    required Stream<TransferProgress> progressStream,
     required VoidCallback onComplete,
     required Function(String) onError,
   }) {
@@ -365,7 +395,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       context: context,
       barrierDismissible: false,
       builder: (context) {
-        return StreamBuilder<TransferManifest>(
+        return StreamBuilder<TransferProgress>(
           stream: progressStream,
           builder: (context, snapshot) {
             if (snapshot.hasError) {
@@ -389,13 +419,10 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               );
             }
 
-            final manifest = snapshot.data!;
-            final isSender = progressStream.toString().contains('sendProgress');
-            final totalChunks = manifest.totalChunks;
-            final processed = isSender ? manifest.chunksSent : manifest.chunksReceived;
-            final progress = totalChunks > 0 ? (processed / totalChunks) : 0.0;
+            final progress = snapshot.data!;
+            final value = progress.fraction;
 
-            if (processed == totalChunks && totalChunks > 0) {
+            if (value >= 1.0) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 Navigator.of(context).pop();
                 onComplete();
@@ -407,15 +434,15 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  LinearProgressIndicator(value: progress),
+                  LinearProgressIndicator(value: value),
                   const SizedBox(height: 16),
                   Text(
-                    '${(progress * 100).toStringAsFixed(1)}% completed',
+                    '${(value * 100).toStringAsFixed(1)}% completed',
                     style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Chunks: $processed / $totalChunks',
+                    'File: ${progress.currentFileName}',
                     style: TextStyle(color: Colors.grey[400], fontSize: 12),
                   ),
                 ],
