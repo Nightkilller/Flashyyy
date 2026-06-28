@@ -1,0 +1,37 @@
+name: flashy
+description: Cross-platform P2P file transfer app — send files directly between devices.
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  crypto: ^3.0.6
+  sqflite: ^2.4.2
+  path: ^1.9.1
+  path_provider: ^2.1.5
+  uuid: ^4.5.1
+  convert: ^3.1.1
+  cryptography: ^2.5.0
+  flutter_secure_storage: ^10.1.0
+  web_socket_channel: ^3.0.1
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^6.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  sqflite_common_ffi: ^2.3.4
+
+flutter:
+  uses-material-design: true
+
+hooks:
+  user_defines:
+    sqlite3:
+      source: system
+      name: sqlite3
