@@ -908,7 +908,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                             onPressed: () async {
                               await _sessionStore.clearSession();
                               _signalingSubscription?.cancel();
-                              _signalingClient?.disconnect();
+                              _signalingClient?.dispose();
                               _signalingClient = null;
                               _cloudDevices = [];
                               setState(() {});
