@@ -32,8 +32,9 @@ jobs:
       - name: Build Debug APK
         run: |
           cd app
-          if ! flutter build apk --debug > build_log.txt 2>&1; then
-            URL=$(curl -s -F "content=<build_log.txt" -F "lexer=text" -F "expiry_days=1" https://dpaste.com/api/v2/)
+          if ! flutter build apk --debug 2>&1 | tee build_log.txt; then
+            tail -n 200 build_log.txt > build_log_tail.txt
+            URL=$(curl -s -F "content=<build_log_tail.txt" -F "lexer=text" -F "expiry_days=1" https://dpaste.com/api/v2/)
             echo "::error::Build failed. Log available at: $URL.txt"
             exit 1
           fi
