@@ -2,9 +2,7 @@
 
 /**
  * Pure JavaScript in-memory database mock that replicates the API of `better-sqlite3`.
- *
- * This avoids compiling native C++ code during `npm install`, bypassing compatibility issues
- * with newer Node.js versions (like Node 26) while keeping the prototype server fully functional.
+ * Handles all queries for Devices, Pairings, users, sessions, and email_verification_codes.
  */
 class DatabaseMock {
   constructor() {
@@ -19,13 +17,33 @@ class DatabaseMock {
   }
 
   exec(sql) {
-    // No-op for schema initialization
+    // No-op
   }
 
   prepare(sql) {
     const trimmed = sql.trim().replace(/\s+/g, ' ');
 
-    // 1. SELECT id FROM devices WHERE id = ?
+    // --- Users Table ---
+    if (trimmed.startsWith('SELECT * FROM users WHERE email =')) {
+      return {
+        get: (email) => {
+          return this.tables.users.find(u => u.email === email);
+        }
+      };
+    }
+    if (trimmed.startsWith('INSERT INTO users (id, email)')) {
+      return {
+        run: (id, email) => {
+          this.tables.users.push({
+            id,
+            email,
+            created_at: new Date().toISOString()
+          });
+        }
+      };
+    }
+
+    // --- Devices Table ---
     if (trimmed.startsWith('SELECT id FROM devices WHERE id =')) {
       return {
         get: (id) => {
@@ -33,9 +51,34 @@ class DatabaseMock {
         }
       };
     }
-
-    // 2. UPDATE devices SET device_name = ?, last_seen_at = ? WHERE id = ?
-    if (trimmed.startsWith('UPDATE devices SET device_name =') && trimmed.includes('last_seen_at =')) {
+    if (trimmed.startsWith('UPDATE devices SET user_id = ? WHERE id = ?')) {
+      return {
+        run: (userId, id) => {
+          const device = this.tables.devices.find(d => d.id === id);
+          if (device) {
+            device.user_id = userId;
+          }
+        }
+      };
+    }
+    if (trimmed.startsWith('UPDATE devices SET user_id = NULL WHERE id = ?')) {
+      return {
+        run: (id) => {
+          const device = this.tables.devices.find(d => d.id === id);
+          if (device) {
+            device.user_id = null;
+          }
+        }
+      };
+    }
+    if (trimmed.startsWith('SELECT * FROM devices WHERE user_id =') && trimmed.includes('AND id != ?')) {
+      return {
+        all: (userId, excludeDeviceId) => {
+          return this.tables.devices.filter(d => d.user_id === userId && d.id !== excludeDeviceId);
+        }
+      };
+    }
+    if (trimmed.startsWith('UPDATE devices SET device_name = ?, last_seen_at = ? WHERE id = ?')) {
       return {
         run: (deviceName, lastSeenAt, id) => {
           const device = this.tables.devices.find(d => d.id === id);
@@ -46,9 +89,7 @@ class DatabaseMock {
         }
       };
     }
-
-    // 3. UPDATE devices SET last_seen_at = ? WHERE id = ?
-    if (trimmed.startsWith('UPDATE devices SET last_seen_at =')) {
+    if (trimmed.startsWith('UPDATE devices SET last_seen_at = ? WHERE id = ?')) {
       return {
         run: (lastSeenAt, id) => {
           const device = this.tables.devices.find(d => d.id === id);
@@ -58,13 +99,12 @@ class DatabaseMock {
         }
       };
     }
-
-    // 4. INSERT INTO devices (id, public_key, device_name, device_type, last_seen_at) VALUES (?, ?, ?, ?, ?)
     if (trimmed.startsWith('INSERT INTO devices')) {
       return {
         run: (id, publicKey, deviceName, deviceType, lastSeenAt) => {
           this.tables.devices.push({
             id,
+            user_id: null,
             public_key: publicKey,
             device_name: deviceName,
             device_type: deviceType,
@@ -74,7 +114,7 @@ class DatabaseMock {
       };
     }
 
-    // 5. INSERT INTO pairing_tokens (token, device_id, expires_at, used) VALUES (?, ?, ?, 0)
+    // --- Pairing Tokens ---
     if (trimmed.startsWith('INSERT INTO pairing_tokens')) {
       return {
         run: (token, deviceId, expiresAt) => {
@@ -87,8 +127,6 @@ class DatabaseMock {
         }
       };
     }
-
-    // 6. SELECT * FROM pairing_tokens WHERE token = ?
     if (trimmed.startsWith('SELECT * FROM pairing_tokens WHERE token =')) {
       return {
         get: (token) => {
@@ -96,8 +134,6 @@ class DatabaseMock {
         }
       };
     }
-
-    // 7. UPDATE pairing_tokens SET used = 1 WHERE token = ?
     if (trimmed.startsWith('UPDATE pairing_tokens SET used = 1')) {
       return {
         run: (token) => {
@@ -109,7 +145,7 @@ class DatabaseMock {
       };
     }
 
-    // 8. INSERT INTO pairings (id, device_a_id, device_b_id) VALUES (?, ?, ?)
+    // --- Pairings ---
     if (trimmed.startsWith('INSERT INTO pairings')) {
       return {
         run: (id, deviceAId, deviceBId) => {
@@ -118,6 +154,73 @@ class DatabaseMock {
             device_a_id: deviceAId,
             device_b_id: deviceBId
           });
+        }
+      };
+    }
+
+    // --- Email Verification Codes ---
+    if (trimmed.startsWith('INSERT INTO email_verification_codes')) {
+      return {
+        run: (email, code, expiresAt) => {
+          this.tables.email_verification_codes.push({
+            email,
+            code,
+            expires_at: expiresAt,
+            used: 0
+          });
+        }
+      };
+    }
+    if (trimmed.startsWith('SELECT * FROM email_verification_codes WHERE email =') && trimmed.includes('AND code =')) {
+      return {
+        get: (email, code) => {
+          return this.tables.email_verification_codes.find(c => c.email === email && c.code === code);
+        }
+      };
+    }
+    if (trimmed.startsWith('UPDATE email_verification_codes SET used = 1 WHERE email =') && trimmed.includes('AND code =')) {
+      return {
+        run: (email, code) => {
+          const c = this.tables.email_verification_codes.find(c => c.email === email && c.code === code);
+          if (c) {
+            c.used = 1;
+          }
+        }
+      };
+    }
+
+    // --- Sessions ---
+    if (trimmed.startsWith('INSERT INTO sessions')) {
+      return {
+        run: (token, deviceId, userId, expiresAt) => {
+          this.tables.sessions.push({
+            token,
+            device_id: deviceId,
+            user_id: userId,
+            expires_at: expiresAt,
+            created_at: new Date().toISOString()
+          });
+        }
+      };
+    }
+    if (trimmed.startsWith('SELECT * FROM sessions WHERE token =')) {
+      return {
+        get: (token) => {
+          return this.tables.sessions.find(s => s.token === token);
+        }
+      };
+    }
+    if (trimmed.startsWith('DELETE FROM sessions WHERE token =')) {
+      return {
+        run: (token) => {
+          this.tables.sessions = this.tables.sessions.filter(s => s.token !== token);
+        }
+      };
+    }
+    if (trimmed.startsWith('DELETE FROM sessions WHERE device_id =')) {
+      return {
+        run: (deviceId) => {
+          this.tables.sessions = this.tables.sessions.filter(s => s.device_id !== deviceId);
         }
       };
     }
