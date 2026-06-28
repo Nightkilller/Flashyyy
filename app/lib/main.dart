@@ -134,7 +134,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         },
       );
 
-      final secureServer = await _connectionManager.startServer();
+      final secureServer = await _connectionManager.startServer(port: 9999);
 
       // 5. LAN Discovery Service
       _discovery = LanDiscoveryService();
