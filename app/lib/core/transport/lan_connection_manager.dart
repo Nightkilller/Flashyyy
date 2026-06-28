@@ -5,6 +5,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import '../identity/keypair_manager.dart';
+import 'connection.dart';
 import 'tls_connection.dart';
 import 'tls_credentials.dart';
 
@@ -32,10 +33,8 @@ class LanConnectionManager {
     );
   }
 
-  /// Handles authentication for an incoming connection on the server side.
-  /// Returns an authenticated [TlsConnection] or throws an [AuthenticationException].
-  Future<TlsConnection> handleIncomingConnection(SecureSocket socket) async {
-    final conn = TlsConnection(socket);
+  /// Authenticates an incoming connection as a server.
+  Future<void> authenticateAsServer(Connection conn) async {
     final lines = conn.incomingBytes.map(utf8.decode).transform(const LineSplitter());
     final iterator = StreamIterator(lines);
     try {
@@ -84,8 +83,6 @@ class LanConnectionManager {
         'deviceId': identityManager.identity.deviceId,
         'signature': mySignatureHex,
       }) + '\n'));
-
-      return conn;
     } catch (e) {
       conn.close();
       rethrow;
@@ -94,24 +91,8 @@ class LanConnectionManager {
     }
   }
 
-  /// Establishes a secure connection to a peer device as a client.
-  /// Returns an authenticated [TlsConnection] or throws an [AuthenticationException].
-  Future<TlsConnection> connectToPeer({
-    required String ipAddress,
-    required int port,
-    required String peerDeviceId,
-  }) async {
-    final socket = await SecureSocket.connect(
-      ipAddress,
-      port,
-      onBadCertificate: (X509Certificate cert) {
-        // Bypass CA validation since we use custom Ed25519 signature verification instead
-        return true;
-      },
-      timeout: const Duration(seconds: 5),
-    );
-
-    final conn = TlsConnection(socket);
+  /// Authenticates an outgoing connection as a client.
+  Future<void> authenticateAsClient(Connection conn, String peerDeviceId) async {
     final lines = conn.incomingBytes.map(utf8.decode).transform(const LineSplitter());
     final iterator = StreamIterator(lines);
     try {
@@ -168,13 +149,46 @@ class LanConnectionManager {
       if (!isHostValid) {
         throw const HttpException('Server signature verification failed');
       }
-
-      return conn;
     } catch (e) {
       conn.close();
       rethrow;
     } finally {
       await iterator.cancel();
+    }
+  }
+
+  /// Handles authentication for an incoming connection on the server side.
+  /// Returns an authenticated [TlsConnection] or throws an [AuthenticationException].
+  Future<TlsConnection> handleIncomingConnection(SecureSocket socket) async {
+    final conn = TlsConnection(socket);
+    await authenticateAsServer(conn);
+    return conn;
+  }
+
+  /// Establishes a secure connection to a peer device as a client.
+  /// Returns an authenticated [TlsConnection] or throws an [AuthenticationException].
+  Future<TlsConnection> connectToPeer({
+    required String ipAddress,
+    required int port,
+    required String peerDeviceId,
+  }) async {
+    final socket = await SecureSocket.connect(
+      ipAddress,
+      port,
+      onBadCertificate: (X509Certificate cert) {
+        // Bypass CA validation since we use custom Ed25519 signature verification instead
+        return true;
+      },
+      timeout: const Duration(seconds: 5),
+    );
+
+    final conn = TlsConnection(socket);
+    try {
+      await authenticateAsClient(conn, peerDeviceId);
+      return conn;
+    } catch (e) {
+      conn.close();
+      rethrow;
     }
   }
 

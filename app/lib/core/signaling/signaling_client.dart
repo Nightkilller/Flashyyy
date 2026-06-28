@@ -124,6 +124,14 @@ class SignalingClient {
     }
   }
 
+  /// Relays signaling or data signals to another device via the server.
+  void sendRelayMessage(String targetDeviceId, Map<String, dynamic> signal) {
+    send('relay', {
+      'targetDeviceId': targetDeviceId,
+      'signal': signal,
+    });
+  }
+
   /// Disposes resources and closes WebSocket.
   Future<void> dispose() async {
     _isDisposed = true;

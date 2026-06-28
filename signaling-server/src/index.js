@@ -137,6 +137,17 @@ wss.on('connection', (ws) => {
           }));
           break;
         }
+
+        case 'relay': {
+          const { targetDeviceId, signal } = payload;
+          if (targetDeviceId && signal) {
+            presenceManager.sendToDevice(targetDeviceId, 'relay', {
+              senderDeviceId: currentDeviceId,
+              signal
+            });
+          }
+          break;
+        }
       }
     } catch (e) {
       console.error('Error handling WebSocket message:', e.message);

@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'core/identity/secure_storage.dart';
 import 'core/identity/keypair_manager.dart';
@@ -14,10 +15,12 @@ import 'core/transfer/resume_state_store.dart';
 import 'core/transfer/transfer_manager.dart';
 import 'core/discovery/lan_discovery_service.dart';
 import 'core/transport/lan_connection_manager.dart';
+import 'core/transport/signaling_connection.dart';
 import 'core/auth/auth_service.dart';
 import 'core/auth/session_store.dart';
 import 'core/signaling/signaling_client.dart';
 import 'core/transport/tls_connection.dart';
+import 'core/transport/connection.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -71,6 +74,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   late SessionStore _sessionStore;
   late AuthService _authService;
   SignalingClient? _signalingClient;
+  StreamSubscription<Map<String, dynamic>>? _signalingSubscription;
+
+  // Cloud synced devices
+  List<Map<String, dynamic>> _cloudDevices = [];
+  final Set<String> _activeCloudTransfers = {};
 
   // Configuration settings (for easier multi-device LAN testing)
   String _signalingServerHost = 'localhost:3000';
@@ -116,8 +124,12 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               return c['public_key'] as String;
             }
           }
-          // If we are logged in, we also trust devices linked to the same account
-          // (Auto-linking verification happens at signaling/identity check)
+          // Also check linked cloud devices
+          for (final d in _cloudDevices) {
+            if (d['id'] == id) {
+              return d['public_key'] as String;
+            }
+          }
           return null;
         },
       );
@@ -158,11 +170,50 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
   void _connectSignaling() {
     if (_sessionStore.isLoggedIn) {
+      _signalingSubscription?.cancel();
+      _signalingClient?.disconnect();
+
       _signalingClient = SignalingClient(
         serverUri: Uri.parse('ws://$_signalingServerHost'),
         identityManager: _identity,
       );
       _signalingClient?.connect();
+
+      // Listen to signaling message events (presence & cloud relays)
+      _signalingSubscription = _signalingClient!.incomingMessages.listen((msg) {
+        if (msg['action'] == 'linkedDevices') {
+          final payload = msg['payload'] as Map<String, dynamic>;
+          setState(() {
+            _cloudDevices = List<Map<String, dynamic>>.from(payload['devices'] as List);
+          });
+        } else if (msg['action'] == 'presenceUpdate') {
+          _requestLinkedDevices();
+        } else if (msg['action'] == 'relay') {
+          final payload = msg['payload'] as Map<String, dynamic>;
+          final senderId = payload['senderDeviceId'] as String;
+          final signal = payload['signal'] as Map<String, dynamic>;
+
+          if (signal['type'] == 'connectRequest') {
+            if (!_activeCloudTransfers.contains(senderId)) {
+              _activeCloudTransfers.add(senderId);
+              _handleIncomingSignalingConnection(senderId).then((_) {
+                _activeCloudTransfers.remove(senderId);
+              }).catchError((_) {
+                _activeCloudTransfers.remove(senderId);
+              });
+            }
+          }
+        }
+      });
+
+      // Delay briefly to allow socket to fully open before requesting list
+      Future.delayed(const Duration(seconds: 1), _requestLinkedDevices);
+    }
+  }
+
+  void _requestLinkedDevices() {
+    if (_signalingClient?.isConnected == true) {
+      _signalingClient?.send('getLinkedDevices', {});
     }
   }
 
@@ -171,6 +222,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     _tabController.dispose();
     _discovery.stopListening();
     _discovery.stopAdvertising();
+    _signalingSubscription?.cancel();
     _signalingClient?.disconnect();
     super.dispose();
   }
@@ -209,6 +261,74 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       await sender.sendFile(conn, filePath);
     } catch (e) {
       debugPrint('Error sending file: $e');
+    } finally {
+      await conn.close();
+    }
+  }
+
+  Future<void> _startCloudSenderTransfer(String peerDeviceId, String peerName) async {
+    // 1. Pick file
+    final result = await FilePicker.platform.pickFiles();
+    if (result == null || result.files.single.path == null) return;
+    final filePath = result.files.single.path!;
+
+    if (_signalingClient == null || !_signalingClient!.isConnected) {
+      _showErrorSnackBar('Signaling disconnected. Reconnecting...');
+      return;
+    }
+
+    // 2. Create virtual Cloud Connection
+    final conn = SignalingConnection(_signalingClient!, peerDeviceId);
+
+    // Send trigger connection request to setup target
+    _signalingClient!.sendRelayMessage(peerDeviceId, {
+      'type': 'connectRequest',
+    });
+
+    // Brief delay to coordinate receivers
+    await Future.delayed(const Duration(milliseconds: 500));
+
+    // 3. Progress tracking
+    final sender = TransferManager(resumeStore: _resumeDb);
+    _showProgressOverlay(
+      title: 'Sending to $peerName (Cloud)',
+      progressStream: sender.sendProgress,
+      onComplete: () => _showSuccessSnackBar('File sent successfully!'),
+      onError: (err) => _showErrorSnackBar('Send failed: $err'),
+    );
+
+    try {
+      // Execute standard client challenge-response over custom transport channel
+      await _connectionManager.authenticateAsClient(conn, peerDeviceId);
+      await sender.sendFile(conn, filePath);
+    } catch (e) {
+      debugPrint('Cloud transfer failed: $e');
+    } finally {
+      await conn.close();
+    }
+  }
+
+  Future<void> _handleIncomingSignalingConnection(String senderId) async {
+    if (_signalingClient == null) return;
+    final conn = SignalingConnection(_signalingClient!, senderId);
+
+    // Start progress tracker & receiver manifest settings
+    final receiver = TransferManager(resumeStore: _resumeDb);
+    final downloadsDir = await getTemporaryDirectory();
+
+    _showProgressOverlay(
+      title: 'Receiving File (Cloud)...',
+      progressStream: receiver.receiveProgress,
+      onComplete: () => _showSuccessSnackBar('File received successfully!'),
+      onError: (err) => _showErrorSnackBar('Receive failed: $err'),
+    );
+
+    try {
+      // Execute server challenge-response over custom transport channel
+      await _connectionManager.authenticateAsServer(conn);
+      await receiver.receiveFiles(conn, downloadsDir.path);
+    } catch (e) {
+      debugPrint('Cloud receiving handshake failed: $e');
     } finally {
       await conn.close();
     }
@@ -508,6 +628,79 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                 );
               },
             ),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Cloud Linked Devices (Cross-Network)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                if (_sessionStore.isLoggedIn)
+                  IconButton(
+                    icon: const Icon(Icons.refresh, size: 20),
+                    onPressed: _requestLinkedDevices,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (!_sessionStore.isLoggedIn)
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Center(
+                    child: Text(
+                      'Log in on the Account tab to enable cloud transfers across different networks.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey[400], fontSize: 13),
+                    ),
+                  ),
+                ),
+              )
+            else if (_cloudDevices.isEmpty)
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(24.0),
+                  child: Center(
+                    child: Text('No other online linked devices. Tap refresh to check.', style: TextStyle(color: Colors.grey[400])),
+                  ),
+                ),
+              )
+            else
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _cloudDevices.length,
+                itemBuilder: (context, index) {
+                  final device = _cloudDevices[index];
+                  final isOnline = device['isOnline'] as bool? ?? false;
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    color: const Color(0xFF1E293B),
+                    child: ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: isOnline ? Colors.greenAccent.withOpacity(0.2) : Colors.grey.withOpacity(0.2),
+                        child: Icon(
+                          Icons.cloud,
+                          color: isOnline ? Colors.greenAccent : Colors.grey,
+                        ),
+                      ),
+                      title: Text(device['device_name'] as String, style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(
+                        isOnline ? 'Online (Cloud)' : 'Offline',
+                        style: TextStyle(color: isOnline ? Colors.greenAccent : Colors.grey, fontSize: 12),
+                      ),
+                      trailing: isOnline
+                          ? ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF6366F1),
+                                foregroundColor: Colors.white,
+                              ),
+                              onPressed: () => _startCloudSenderTransfer(device['id'] as String, device['device_name'] as String),
+                              child: const Text('Send File'),
+                            )
+                          : null,
+                    ),
+                  );
+                },
+              ),
           ],
         ),
       ),
@@ -688,8 +881,10 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
                             onPressed: () async {
                               await _sessionStore.clearSession();
+                              _signalingSubscription?.cancel();
                               _signalingClient?.disconnect();
                               _signalingClient = null;
+                              _cloudDevices = [];
                               setState(() {});
                               this.setState(() {}); // refresh outer views
                             },
@@ -778,7 +973,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                   decoration: const InputDecoration(
                     labelText: 'Signaling Server IP:Port',
                     border: OutlineInputBorder(),
-                    helperText: 'e.g., 192.168.1.50:3000 (Set to local signaling IP for multi-device testing)',
+                    helperText: 'e.g., 192.168.1.50:8080 (Set to local signaling IP for multi-device testing)',
                   ),
                   onChanged: (val) {
                     setState(() {
