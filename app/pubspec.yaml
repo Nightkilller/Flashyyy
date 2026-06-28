@@ -21,6 +21,7 @@ dependencies:
   qr_flutter: ^4.1.0
   mobile_scanner: ^6.0.0
   multicast_dns: ^0.3.2+2
+  file_picker: ^8.0.0
 
 dev_dependencies:
   flutter_test:
