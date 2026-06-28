@@ -32,7 +32,11 @@ jobs:
       - name: Build Debug APK
         run: |
           cd app
-          flutter build apk --debug
+          if ! flutter build apk --debug > build_log.txt 2>&1; then
+            echo "::error::Build failed. Last 50 lines:"
+            tail -n 50 build_log.txt | while read line; do echo "::error::$line"; done
+            exit 1
+          fi
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
