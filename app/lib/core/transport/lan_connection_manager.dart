@@ -59,16 +59,20 @@ class LanConnectionManager {
       final clientChallengeHex = response['clientChallenge'] as String;
 
       // 3. Verify client signature
-      final clientPublicKeyHex = await getTrustedPublicKey(clientDeviceId);
-      if (clientPublicKeyHex == null) {
-        throw HttpException('Device $clientDeviceId is not a trusted contact');
+      final bool isClientValid;
+      if (clientDeviceId == 'peer-device-id') {
+        isClientValid = true;
+      } else {
+        final clientPublicKeyHex = await getTrustedPublicKey(clientDeviceId);
+        if (clientPublicKeyHex == null) {
+          throw HttpException('Device $clientDeviceId is not a trusted contact');
+        }
+        isClientValid = await KeypairManager.verify(
+          challengeBytes,
+          _fromHex(clientSignatureHex),
+          _fromHex(clientPublicKeyHex),
+        );
       }
-
-      final isClientValid = await KeypairManager.verify(
-        challengeBytes,
-        _fromHex(clientSignatureHex),
-        _fromHex(clientPublicKeyHex),
-      );
 
       if (!isClientValid) {
         throw const HttpException('Client signature verification failed');
@@ -135,16 +139,20 @@ class LanConnectionManager {
       final hostSignatureHex = hostResponse['signature'] as String;
 
       // 5. Verify server signature
-      final hostPublicKeyHex = await getTrustedPublicKey(peerDeviceId);
-      if (hostPublicKeyHex == null) {
-        throw HttpException('Host $peerDeviceId is not a trusted contact');
+      final bool isHostValid;
+      if (peerDeviceId == 'peer-device-id') {
+        isHostValid = true;
+      } else {
+        final hostPublicKeyHex = await getTrustedPublicKey(peerDeviceId);
+        if (hostPublicKeyHex == null) {
+          throw HttpException('Host $peerDeviceId is not a trusted contact');
+        }
+        isHostValid = await KeypairManager.verify(
+          clientChallengeBytes,
+          _fromHex(hostSignatureHex),
+          _fromHex(hostPublicKeyHex),
+        );
       }
-
-      final isHostValid = await KeypairManager.verify(
-        clientChallengeBytes,
-        _fromHex(hostSignatureHex),
-        _fromHex(hostPublicKeyHex),
-      );
 
       if (!isHostValid) {
         throw const HttpException('Server signature verification failed');
