@@ -124,9 +124,10 @@ struct WelcomeLoginView: View {
                     }
                     
                     SocialButton(content: AnyView(
-                        Image(systemName: "f.square.fill")
-                            .font(.system(size: 22))
+                        Text("f")
+                            .font(.system(size: 32, weight: .bold, design: .rounded))
                             .foregroundColor(Color(red: 0.09, green: 0.47, blue: 0.95))
+                            .offset(x: 2, y: 1)
                     )) {
                         simulateSocialLogin(email: "fb.user@facebook.com")
                     }
