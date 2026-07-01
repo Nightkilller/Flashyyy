@@ -2,7 +2,7 @@
   <img src="logo.png" width="120" height="120" alt="Flashy Logo" />
 </p>
 
-<h1 align="center">Flashy 🚀</h1>
+<h1 align="center">Flashy </h1>
 
 Flashy is a premium, secure, high-speed cross-platform peer-to-peer (P2P) file transfer application built with Flutter and Node.js. It automatically detects nearby local network (LAN) peers for direct TLS socket transfers, falling back to signaling coordination when necessary.
 
