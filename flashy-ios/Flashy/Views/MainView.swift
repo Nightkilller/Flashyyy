@@ -139,7 +139,7 @@ struct HomeTabView: View {
                         .font(.system(size: 24, weight: .semibold, design: .rounded))
                         .foregroundColor(.white)
                     
-                    Text(appState.localDeviceName.components(separatedBy: " ").first ?? "User")
+                    Text(appState.currentUserDisplayName ?? "Buddy")
                         .font(.system(size: 36, weight: .heavy, design: .rounded))
                         .foregroundColor(FTheme.primary)
                 }
