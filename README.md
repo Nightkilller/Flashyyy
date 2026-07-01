@@ -1,4 +1,8 @@
-# Flashy 🚀
+<p align="center">
+  <img src="logo.png" width="120" height="120" alt="Flashy Logo" />
+</p>
+
+<h1 align="center">Flashy 🚀</h1>
 
 Flashy is a premium, secure, high-speed cross-platform peer-to-peer (P2P) file transfer application built with Flutter and Node.js. It automatically detects nearby local network (LAN) peers for direct TLS socket transfers, falling back to signaling coordination when necessary.
 
@@ -17,7 +21,7 @@ Flashy is a premium, secure, high-speed cross-platform peer-to-peer (P2P) file t
 
 ## 📐 System Architecture
 
-The following diagram illustrates how Flashy coordinates peer discovery, establishes direct secure sockets, and executes files transfers over the LAN:
+The following diagram illustrates how Flashy coordinates peer discovery, establishes direct secure sockets, and executes file transfers over the LAN:
 
 ```mermaid
 sequenceDiagram
@@ -49,6 +53,22 @@ sequenceDiagram
     Client B->>Client A: Send Acknowledgment (Offset)
     Note over Client A, Client B: Transfer Completed (Assemble File)
 ```
+
+> [!NOTE]
+> **Mobile Fallback Walkthrough**: If the interactive sequence diagram above is not rendering on your mobile client or browser, refer to this detailed phase walkthrough below:
+> 
+> | Phase | Source | Target | Action & Verification |
+> |---|---|---|---|
+> | **1. LAN Discovery** | Device A (Sender) | Multicast | Broadcasts UDP multicast beacon containing its custom Device ID & TLS Socket Port. |
+> | | Device B (Receiver) | Local List | Listens on port `8888` and dynamically registers Device A on discovery. |
+> | **2. TLS Handshake** | Device A (Sender) | Device B (Receiver) | Connects via a private secure TLS socket. |
+> | | Device B (Receiver) | Device A (Sender) | Responds with a random challenge string. |
+> | | Device A (Sender) | Device B (Receiver) | Signs the challenge with local Ed25519 key, returns signature & own challenge. |
+> | | Device B (Receiver) | Device A (Sender) | Verifies A's signature via contact database, returns signature & `authOk`. |
+> | **3. Transfer & Resume**| Device A (Sender) | Device B (Receiver) | Transmits a transfer manifest (total payload sizes, chunk offsets). |
+> | | Device B (Receiver) | Device A (Sender) | Initializes SQLite tracking for index state, requests remaining chunks. |
+> | | Device A (Sender) | Device B (Receiver) | Streams length-prefixed chunk bytes along with individual SHA-256 checksums. |
+> | | Device B (Receiver) | Device A (Sender) | Validates hash, commits chunk to local disk, updates SQLite progress, returns index ACK. |
 
 ---
 
